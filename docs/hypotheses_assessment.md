@@ -1,5 +1,15 @@
 # CausalTemp-XAI v0.1 — Hypothesis Assessment
 
+> **⚠️ Superseded** by [`docs/final_report.md`](final_report.md), which re-runs the
+> full suite (`full`, `full_sparse`, `full_nl`) with the current **LSTM** harness
+> (test acc ~0.99) and DiCE `method="random"`. This document is the frozen v0.1
+> record on the earlier **avg-pool TCN** classifier (test acc 0.787). The headline
+> rank inversion is **conditional on graph sparsity** in the new run: it reappears
+> at `full_sparse` (validity ρ = −0.87, CARLA validity collapses to 0) but not at
+> `full` (the strong LSTM makes every method valid). Read the final report for the
+> current verdicts.
+
+
 **Date:** 2026-06-13
 **Config:** `full` (locked paper config — k=10, L=1, sparsity=0.2, Laplace noise, T=100, N=10 000, seed=42)
 **Classifier:** frozen TCN, test accuracy **0.787** (train 0.831 / val 0.784) — avg-pool vs endpoint-label cap, documented in the plan Issues; CF-faith is classifier-agnostic.

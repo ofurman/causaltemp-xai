@@ -104,7 +104,7 @@ class _DiCESingle:
         return _squeeze_cfs(self._dice.generate_batch(X, model))
 
 
-def build_methods(X_train: np.ndarray, use_dice_ml: bool):
+def build_methods(X_train: np.ndarray, use_dice_ml: bool, dice_method: str = "gradient"):
     """Construct the three CF methods. DiCE gets a (capped) background set."""
     background = X_train[: min(200, len(X_train))]
     wachter = WachterCF(target_class=TARGET_CLASS, n_steps=300, lr=0.1)
@@ -114,6 +114,7 @@ def build_methods(X_train: np.ndarray, use_dice_ml: bool):
         n_steps=300,
         background_data=background,
         use_dice_ml=use_dice_ml,
+        method=dice_method,
     )
     carla = CARLARecourse(
         target_class=TARGET_CLASS, n_steps=300, t0_fractions=(0.25, 0.5)
@@ -411,11 +412,14 @@ def run_nonlinear(config_name, n_cf, out_dir):
 # ---------------------------------------------------------------------------
 
 
-def run(config_name, n_cf, out_dir, use_dice_ml):
+def run(config_name, n_cf, out_dir, use_dice_ml, dice_method="gradient", nl_mode="oracle"):
     cfg = get_config(config_name)
-    if cfg.mechanism_type != "linear":
-        # Nonlinear configs route to the oracle-CF smoke path (no checkpoint /
-        # no real CF methods — see run_nonlinear's banner).
+    is_nonlinear = cfg.mechanism_type != "linear"
+    if is_nonlinear and nl_mode == "oracle":
+        # Default nonlinear path: classifier-free oracle-CF positive control (no
+        # checkpoint / no real CF methods — see run_nonlinear's banner).
+        # Pass ``--nl-mode real`` to run the real CF pipeline below instead
+        # (needs an lstm.pt trained on the nonlinear config).
         return run_nonlinear(config_name, n_cf, out_dir)
     data = load_dataset(cfg.name, out_dir=out_dir)
     X_train = data["X_train"]
@@ -444,7 +448,7 @@ def run(config_name, n_cf, out_dir, use_dice_ml):
         f"selected {len(X_sel)} flip candidates (target={TARGET_CLASS})"
     )
 
-    methods = build_methods(X_train, use_dice_ml=use_dice_ml)
+    methods = build_methods(X_train, use_dice_ml=use_dice_ml, dice_method=dice_method)
 
     summary, all_rows = [], []
     cf_cache = {}
@@ -458,6 +462,19 @@ def run(config_name, n_cf, out_dir, use_dice_ml):
             rec["dice_backend"] = methods["DiCE"].backend_used
         summary.append(rec)
         all_rows.extend(per_instance_records(clf, X_sel, cfs, graph, mech, name))
+
+    if is_nonlinear:
+        # Keep the Stage-4 oracle structural-CFs as ground-truth positive
+        # controls alongside the real methods. With a classifier now present we
+        # score them through the standard evaluate_method (so they also get
+        # validity/OOD), unlike the classifier-free run_nonlinear path.
+        for oname, noiseless in (("OracleCF-Pearl", False), ("OracleCF-Rollout", True)):
+            print(f"[run_all] building oracle control: {oname} …")
+            ocfs = build_oracle_cfs(X_sel, mech, noiseless=noiseless)
+            orec = evaluate_method(clf, X_sel, ocfs, X_train, graph, mech, TARGET_CLASS)
+            orec["method"] = oname
+            summary.append(orec)
+            all_rows.extend(per_instance_records(clf, X_sel, ocfs, graph, mech, oname))
 
     print("[run_all] integrated-gradients attribution foil …")
     attribution = attribution_block(clf, X_sel)
@@ -478,8 +495,11 @@ def run(config_name, n_cf, out_dir, use_dice_ml):
             "config": cfg.as_dict(),
             "seed": cfg.seed,
             "n_cf": int(len(X_sel)),
+            "mechanism_type": cfg.mechanism_type,
+            "nl_mode": nl_mode if is_nonlinear else None,
             "classifier_accuracy": accuracies,
             "dice_backend": methods["DiCE"].backend_used,
+            "dice_method": dice_method,
             "target_class": TARGET_CLASS,
         },
         "methods": summary,
@@ -558,7 +578,23 @@ def main(argv=None):
     parser.add_argument(
         "--no-dice-ml",
         action="store_true",
-        help="Use the from-scratch DPP DiCE fallback instead of the dice-ml gradient backend.",
+        help="Use the from-scratch DPP DiCE fallback instead of the dice-ml backend.",
+    )
+    parser.add_argument(
+        "--dice-method",
+        default="gradient",
+        choices=["gradient", "random", "genetic", "kdtree"],
+        help="dice-ml explainer method (ignored with --no-dice-ml).",
+    )
+    parser.add_argument(
+        "--nl-mode",
+        default="oracle",
+        choices=["oracle", "real"],
+        help=(
+            "Nonlinear-config CF path: 'oracle' (default, classifier-free "
+            "oracle-CF positive control) or 'real' (train/load an LSTM and run "
+            "Wachter/DiCE/CARLA + oracle controls). Ignored for linear configs."
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -566,7 +602,14 @@ def main(argv=None):
     if n_cf is None:
         n_cf = 20 if args.config.startswith("smoke") else 100
 
-    run(args.config, n_cf, args.out_dir, use_dice_ml=not args.no_dice_ml)
+    run(
+        args.config,
+        n_cf,
+        args.out_dir,
+        use_dice_ml=not args.no_dice_ml,
+        dice_method=args.dice_method,
+        nl_mode=args.nl_mode,
+    )
     return 0
 
 

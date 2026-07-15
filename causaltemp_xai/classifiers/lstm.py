@@ -446,7 +446,11 @@ def _train_cli(argv: list[str] | None = None) -> None:
     from causaltemp_xai.data_io import DEFAULT_OUT_DIR, generate_and_save, load_dataset
 
     parser = argparse.ArgumentParser(description="Train an LSTMClassifier on a locked config.")
-    parser.add_argument("--config", choices=["smoke", "full", "full_sparse"], required=True)
+    parser.add_argument(
+        "--config",
+        choices=["smoke", "full", "full_sparse", "smoke_nl", "full_nl"],
+        required=True,
+    )
     parser.add_argument("--train", action="store_true", help="Run training (required).")
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
     parser.add_argument("--max-epochs", type=int, default=100)

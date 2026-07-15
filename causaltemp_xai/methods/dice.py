@@ -65,6 +65,7 @@ class DiCECF:
         n_steps: int = 500,
         background_data: Optional[np.ndarray] = None,
         use_dice_ml: bool = True,
+        method: str = "gradient",
     ) -> None:
         self.target_class = target_class
         self.n_cfs = n_cfs
@@ -72,6 +73,8 @@ class DiCECF:
         self.lam_div = lam_div
         self.lr = lr
         self.n_steps = n_steps
+        #: dice-ml explainer method ("gradient" | "random" | "genetic" | "kdtree").
+        self.method = method
         # dice-ml needs a background dataset (for feature ranges/MADs); the
         # uniform generate(x, model) interface does not supply one, so it is
         # passed here. When absent, the from-scratch DPP fallback is used.
@@ -167,7 +170,8 @@ class DiCECF:
 
         Builds a flatten/reshape adapter ``(N, T*k) -> P(class=target)`` around
         ``LSTMClassifier.torch_logits`` and a ``dice_ml.Data`` from the flattened
-        background set, then runs ``method="gradient"``.
+        background set, then runs the configured ``self.method`` (default
+        ``"gradient"``; ``"random"`` for fast sampling-based search).
         """
         import dice_ml
         import pandas as pd
@@ -177,7 +181,11 @@ class DiCECF:
         D = T * k
         cols = [f"f{i}" for i in range(D)]
 
-        bg = self.background_data.reshape(self.background_data.shape[0], D)
+        # Use float64 columns: dice-ml's random/genetic samplers assign float64
+        # sampled values back into the frame, which newer pandas (>=2.1) refuses
+        # to coerce into float32 columns (raises TypeError on upcast). float64 is
+        # safe for the gradient backend too (values are tensorised downstream).
+        bg = self.background_data.reshape(self.background_data.shape[0], D).astype(np.float64)
         with torch.no_grad():
             bg_pred = model.predict(self.background_data)
         df = pd.DataFrame(bg, columns=cols)
@@ -201,9 +209,9 @@ class DiCECF:
 
         adapter = _FlatAdapter(model, T, k, self.target_class)
         m = dice_ml.Model(model=adapter, backend="PYT")
-        exp = dice_ml.Dice(data, m, method="gradient")
+        exp = dice_ml.Dice(data, m, method=self.method)
 
-        query = pd.DataFrame(x_arr.reshape(1, D), columns=cols)
+        query = pd.DataFrame(x_arr.reshape(1, D).astype(np.float64), columns=cols)
         result = exp.generate_counterfactuals(
             query, total_CFs=self.n_cfs, desired_class=self.target_class
         )

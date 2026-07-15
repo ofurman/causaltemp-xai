@@ -43,8 +43,9 @@ uv sync --extra dev
 # 1. generate the locked paper dataset (k=10, L=1, T=100, N=10_000, Laplace noise)
 uv run python -m causaltemp_xai.data_io --config full
 
-# 2. train + freeze the TCN classifier -> data/scm_t/full/tcn.pt
-uv run python -m causaltemp_xai.classifiers.tcn --config full --train --patience 20
+# 2. train + freeze the LSTM classifier -> data/scm_t/full/lstm.pt
+#    (this is the checkpoint the harness loads; --config full trains at paper scale)
+uv run python -m causaltemp_xai.classifiers.lstm --config full --train --patience 20
 
 # 3. run the harness: 3 CF methods x Axis-C + both CF-faith metrics
 #    + IG attribution foil + Shift-VR-lite -> experiments/results.json (+ per_instance.csv)
@@ -82,23 +83,35 @@ over unchanged to the nonlinear mechanisms.
 # 1. generate the nonlinear dataset (smoke: k=5, T=30, N=500 / full_nl mirrors `full`)
 uv run python -m causaltemp_xai.data_io --config smoke_nl
 
-# 2. run the harness on the nonlinear config
-uv run python experiments/run_all.py --config smoke_nl     # or full_nl
+# 2a. oracle-CF path (default): classifier-free positive control
+uv run python experiments/run_all.py --config smoke_nl               # or full_nl
+
+# 2b. real-CF path: train an LSTM, then run Wachter/DiCE/CARLA + oracle controls
+uv run python -m causaltemp_xai.classifiers.lstm --config full_nl --train --patience 20
+uv run python experiments/run_all.py --config full_nl --nl-mode real --n-cf 100 --dice-method random
 ```
 
-On nonlinear configs `run_all.py` routes to a dedicated **oracle-CF path**: it
-needs no classifier checkpoint and runs no real CF methods, scoring CF-faith on
-the Stage-4 oracle structural counterfactual as a built-in positive control. Two
-mutually-exclusive oracle variants are emitted — the Pearl oracle scores
-`pearl_hard=1` and the noiseless (skeleton) oracle scores `rollout_hard=1` by
-construction — demonstrating the rollout-vs-pearl contrast on nonlinear data.
+By default (`--nl-mode oracle`) `run_all.py` routes nonlinear configs to a
+**classifier-free oracle-CF path**: it needs no checkpoint and runs no real CF
+methods, scoring CF-faith on the Stage-4 oracle structural counterfactual as a
+built-in positive control. Two mutually-exclusive oracle variants are emitted —
+the Pearl oracle scores `pearl_hard=1` and the noiseless (skeleton) oracle scores
+`rollout_hard=1` by construction — demonstrating the rollout-vs-pearl contrast on
+nonlinear data.
+
+With **`--nl-mode real`** the harness instead trains/loads an LSTM on the
+nonlinear data and runs the full real-CF pipeline (Wachter/DiCE/CARLA + the full
+Axis-C, CF-faith, IG-attribution and Shift-VR metric suite), keeping the two
+oracle variants as ground-truth positive controls. CARLA's recourse is already
+mechanism-generic — it rolls the differentiable `MLPMechanism.forward_torch`
+forward — so it is faithful by construction (`rollout_hard=1`) on MLP mechanisms
+just as on the linear VAR.
 
 **Scope:** this ships nonlinear *transitions* only. Nonlinear **mixing**
 `x = g(z)` (an invertible observation map over latents) and **non-additive**
 noise are a separate identifiability axis (iVAE/CITRIS) and are documented as a
 **future extension** — see the [`docs/plans/nlinearscm-t/`](docs/plans/nlinearscm-t/index.md)
-Backlog. Real CF methods (Wachter/DiCE/CARLA) on the nonlinear SCM are the
-collaborator's track and are likewise out of scope here.
+Backlog.
 
 ## Quickstart (library API)
 
